@@ -1,5 +1,5 @@
 //! Read-only image discovery. No sidecar files are written to the source folder.
-use std::{collections::HashMap, fs, path::{Path, PathBuf}, time::SystemTime};
+use std::{fs, path::{Path, PathBuf}, time::SystemTime};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FileStamp {
@@ -64,27 +64,6 @@ pub fn scan_folder(folder: &Path, recursive: bool) -> Result<Vec<Photo>, String>
     Ok(photos)
 }
 
-/// Keeps existing tiles in the same spatial slots when new photos appear.
-pub fn preserve_order(previous: &[Photo], discovered: Vec<Photo>) -> Vec<Photo> {
-    let mut by_path: HashMap<PathBuf, Photo> = discovered
-        .into_iter().map(|photo| (photo.path.clone(), photo)).collect();
-    let mut ordered = Vec::with_capacity(by_path.len());
-    for old in previous {
-        if let Some(updated) = by_path.remove(&old.path) {
-            ordered.push(updated);
-        }
-    }
-    // New photos enter at the end, in deterministic filename order.
-    let mut appended: Vec<Photo> = by_path.into_values().collect();
-    appended.sort_by(|a, b| {
-        a.path.to_string_lossy().to_lowercase()
-            .cmp(&b.path.to_string_lossy().to_lowercase())
-            .then_with(|| a.path.cmp(&b.path))
-    });
-    ordered.extend(appended);
-    ordered
-}
-
 /// Finds an existing selection by path rather than its former sort position.
 pub fn restore_selected_index(selected: Option<&Path>, photos: &[Photo]) -> Option<usize> {
     selected.and_then(|path| photos.iter().position(|photo| photo.path == path))
@@ -116,35 +95,6 @@ mod tests {
         assert_eq!(restore_selected_index(Some(selected), &updated), Some(2));
         assert_eq!(restore_selected_index(Some(selected), &updated[..2]), None);
         assert_eq!(restore_selected_index(None, &updated), None);
-    }
-
-    #[test]
-    fn file_watcher_rescan_preserves_existing_spatial_order() {
-        let photo = |name: &str| Photo {
-            path: PathBuf::from(name),
-            title: name.to_string(),
-            stamp: None,
-        };
-        let old = vec![photo("c.jpg"), photo("z.jpg"), photo("m.jpg")];
-        let incoming = vec![
-            photo("a.jpg"), photo("b.jpg"), photo("c.jpg"),
-            photo("m.jpg"), photo("z.jpg"),
-        ];
-        let merged = preserve_order(&old, incoming);
-        let paths: Vec<_> = merged.iter().map(|p| p.path.as_os_str().to_str().unwrap()).collect();
-        assert_eq!(paths, ["c.jpg", "z.jpg", "m.jpg", "a.jpg", "b.jpg"]);
-    }
-
-    #[test]
-    fn removed_files_disappear_and_remaining_photos_stay_ordered() {
-        let photo = |name: &str| Photo {
-            path: PathBuf::from(name),
-            title: name.to_string(),
-            stamp: None,
-        };
-        let merged = preserve_order(&[photo("a.png"), photo("b.png")], vec![photo("b.png")]);
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].path, PathBuf::from("b.png"));
     }
 
     #[test]

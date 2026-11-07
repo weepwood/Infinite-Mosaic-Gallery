@@ -20,10 +20,12 @@ pub fn affects_gallery(event: &Event) -> bool {
 
 /// Ignore application-owned thumbnails, even if a user watches their home
 /// directory recursively. Without this guard, cache writes could rescan forever.
-pub fn should_rescan(event: &Event, app_cache: &Path) -> bool {
+pub fn should_rescan(event: &Event, preview_cache: &Path, slot_data: &Path) -> bool {
     affects_gallery(event)
         && (event.paths.is_empty()
-            || event.paths.iter().any(|path| !path.starts_with(app_cache)))
+            || event.paths.iter().any(|path| {
+                !path.starts_with(preview_cache) && !path.starts_with(slot_data)
+            }))
 }
 
 pub fn watch_folder(
@@ -31,10 +33,11 @@ pub fn watch_folder(
     recursive: bool,
     notification: Sender<()>,
 ) -> notify::Result<RecommendedWatcher> {
-    let app_cache = crate::thumbnails::cache_dir();
+    let preview_cache = crate::thumbnails::cache_dir();
+    let slot_data = crate::slots::data_dir();
     let mut watcher = notify::recommended_watcher(move |result: notify::Result<Event>| {
         if let Ok(event) = result {
-            if should_rescan(&event, &app_cache) {
+            if should_rescan(&event, &preview_cache, &slot_data) {
                 // Bounded to one pending notification, so large copy/move operations
                 // cannot grow memory while scanning or rendering is busy.
                 let _ = notification.try_send(());
@@ -82,8 +85,12 @@ mod tests {
             "/photos/.cache/InfiniteMosaicGallery/previews-v1/0001.png",
         );
         let real_photo = event(EventKind::Create(CreateKind::File), "/photos/real.jpg");
-        assert!(!should_rescan(&event_inside, &cache));
-        assert!(should_rescan(&real_photo, &cache));
+        let slot_data = std::path::PathBuf::from("/photos/.local/share/InfiniteMosaicGallery/slots-v1");
+        assert!(!should_rescan(&event_inside, &cache, &slot_data));
+        assert!(should_rescan(&real_photo, &cache, &slot_data));
+        let index_write = event(EventKind::Create(CreateKind::File),
+            "/photos/.local/share/InfiniteMosaicGallery/slots-v1/123.json");
+        assert!(!should_rescan(&index_write, &cache, &slot_data));
     }
 
     #[test]

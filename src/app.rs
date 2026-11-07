@@ -6,7 +6,7 @@ use gpui_kit::*;
 use crate::camera::Camera;
 use crate::catalog::{self, Photo};
 use crate::layout::{self, Rect, Tile};
-use crate::{thumbnails, image_cache::RecentImageCache, reflow, focus_geometry};
+use crate::{thumbnails, image_cache::RecentImageCache, reflow, focus_geometry, watcher, slots};
 
 const HEADER_HEIGHT: f32 = 68.0;
 const FOOTER_HEIGHT: f32 = 36.0;
@@ -25,6 +25,8 @@ struct Drag {
 pub struct Gallery {
     folder: Option<PathBuf>,
     photos: Vec<Photo>,
+    /// Sorted persistent spatial positions for binary-search viewport culling.
+    slots: Vec<usize>,
     camera: Camera,
     focused: Option<usize>,
     /// Last selected item remains mounted until the closing spring reaches zero.
@@ -35,6 +37,11 @@ pub struct Gallery {
     error: Option<String>,
     generation: u64,
     scan_task: Option<Task<()>>,
+    watcher: Option<notify::RecommendedWatcher>,
+    watcher_task: Option<Task<()>>,
+    watcher_session: u64,
+    live_watch: bool,
+    watcher_error: Option<String>,
     images: Entity<RecentImageCache>,
     focus_images: Entity<RecentImageCache>,
     preview_paths: HashMap<usize, PathBuf>,
@@ -51,6 +58,7 @@ impl Gallery {
         let mut gallery = Self {
             folder: None,
             photos: Vec::new(),
+            slots: Vec::new(),
             camera: Camera::default(),
             focused: None,
             presented: None,
@@ -60,6 +68,11 @@ impl Gallery {
             error: None,
             generation: 0,
             scan_task: None,
+            watcher: None,
+            watcher_task: None,
+            watcher_session: 0,
+            live_watch: true,
+            watcher_error: None,
             images: RecentImageCache::new(128, cx),
             focus_images: RecentImageCache::new(2, cx),
             preview_paths: HashMap::new(),
@@ -78,6 +91,7 @@ impl Gallery {
 
     fn load(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
         self.scan(folder, false, cx);
+        self.configure_watcher(cx);
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
@@ -86,12 +100,60 @@ impl Gallery {
         }
     }
 
+    /// A native watcher owns one bounded notification channel and a foreground
+    /// task. Switching folders or toggling recursion retires the old session.
+    fn configure_watcher(&mut self, cx: &mut Context<Self>) {
+        self.watcher_session = self.watcher_session.wrapping_add(1);
+        self.watcher_task = None;
+        self.watcher = None;
+        self.watcher_error = None;
+        if !self.live_watch {
+            cx.notify();
+            return;
+        }
+        let Some(folder) = self.folder.as_ref() else { return };
+        let (sender, receiver) = async_channel::bounded::<()>(1);
+        let watcher = match watcher::watch_folder(folder, self.recursive, sender) {
+            Ok(watcher) => watcher,
+            Err(err) => {
+                self.watcher_error = Some(format!("自动监听不可用：{err}"));
+                cx.notify();
+                return;
+            }
+        };
+        self.watcher = Some(watcher);
+        let session = self.watcher_session;
+        self.watcher_task = Some(cx.spawn(async move |weak, cx| {
+            while receiver.recv().await.is_ok() {
+                // Queue capacity 1 keeps large copy/move bursts memory bounded.
+                cx.background_executor()
+                    .timer(Duration::from_millis(550))
+                    .await;
+                while receiver.try_recv().is_ok() {}
+                if weak.update(cx, |gallery, cx| {
+                    if gallery.live_watch && gallery.watcher_session == session {
+                        gallery.reload(cx);
+                    }
+                }).is_err() {
+                    break;
+                }
+            }
+        }));
+        cx.notify();
+    }
+
+    fn toggle_watch(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        self.live_watch = !self.live_watch;
+        self.configure_watcher(cx);
+    }
+
     fn scan(&mut self, folder: PathBuf, preserve_view: bool, cx: &mut Context<Self>) {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         self.folder = Some(folder.clone());
         if !preserve_view {
             self.photos.clear();
+            self.slots.clear();
             self.preview_paths.clear();
             self.preview_failures.clear();
             self.preview_inflight.clear();
@@ -106,7 +168,7 @@ impl Gallery {
 
         let recursive = self.recursive;
         let worker = cx.background_spawn(async move {
-            catalog::scan_folder(&folder, recursive)
+            slots::scan_with_slots(&folder, recursive)
         });
         // Stale results cannot replace a later folder/refresh request.
         self.scan_task = Some(cx.spawn(async move |weak, cx| {
@@ -130,12 +192,10 @@ impl Gallery {
                         let selected_path = view.focused
                             .and_then(|index| old_photos.get(index))
                             .map(|photo| photo.path.clone());
-                        let ordered = if preserve_view {
-                            catalog::preserve_order(&old_photos, photos)
-                        } else {
-                            photos
-                        };
-                        view.photos = ordered;
+                        // Photos are already sorted by persistent spatial slot.
+                        // Deletions leave tombstones and never shift survivors.
+                        view.photos = photos;
+                        view.slots = view.photos.iter().map(|photo| photo.slot).collect();
                         for (index, photo) in view.photos.iter().enumerate() {
                             if let (Some(new_stamp), Some((old_stamp, preview_path))) =
                                 (photo.stamp, ready_by_path.get(&photo.path))
@@ -190,6 +250,7 @@ impl Gallery {
     fn toggle_recursive(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         self.recursive = !self.recursive;
         if self.folder.is_some() {
+            self.configure_watcher(cx);
             self.reload(cx);
         } else {
             cx.notify();
@@ -412,6 +473,11 @@ impl Gallery {
                             .on_click(cx.listener(Self::toggle_titles)),
                     )
                     .child(
+                        Button::new("watcher-toggle")
+                            .label(if self.live_watch { "自动同步：开" } else { "自动同步：关" })
+                            .on_click(cx.listener(Self::toggle_watch)),
+                    )
+                    .child(
                         Button::new("reset-view")
                             .label("重置视角")
                             .on_click(cx.listener(Self::reset_camera)),
@@ -425,8 +491,13 @@ impl Gallery {
             "正在扫描文件夹…".to_string()
         } else if let Some(error) = &self.error {
             error.clone()
+        } else if let Some(error) = &self.watcher_error {
+            format!("{error}（可继续手动刷新）")
         } else {
-            format!("{} 张图片  ·  缩放 {}%  ·  预览已就绪 {}  ·  处理中 {}  ·  失败 {}", self.photos.len(), (self.camera.zoom * 100.0).round(), self.preview_paths.len(), self.preview_inflight.len(), self.preview_failures.len())
+            let reserved = self.slots.last().map(|slot| slot + 1 - self.slots.len()).unwrap_or(0);
+            format!("{} 张图片  ·  预留空槽 {}  ·  缩放 {}%  ·  预览已就绪 {}  ·  处理中 {}  ·  失败 {}",
+                self.photos.len(), reserved, (self.camera.zoom * 100.0).round(),
+                self.preview_paths.len(), self.preview_inflight.len(), self.preview_failures.len())
         };
         div()
             .h(px(FOOTER_HEIGHT))
@@ -516,16 +587,16 @@ impl Gallery {
         // Each tile owns four stable, interruptible spring channels.
         // GPUI Base motion honors the platform's reduced-motion preference.
         let spring = gpui_kit::base::Spring::new(Duration::from_millis(390)).with_damping(0.84);
-        let x = gpui_kit::base::spring((index, "wall-x"), target.x, spring, window, cx);
-        let y = gpui_kit::base::spring((index, "wall-y"), target.y, spring, window, cx);
-        let w = gpui_kit::base::spring((index, "wall-width"), target.width, spring, window, cx);
-        let h = gpui_kit::base::spring((index, "wall-height"), target.height, spring, window, cx);
+        let x = gpui_kit::base::spring((photo.slot, "wall-x"), target.x, spring, window, cx);
+        let y = gpui_kit::base::spring((photo.slot, "wall-y"), target.y, spring, window, cx);
+        let w = gpui_kit::base::spring((photo.slot, "wall-width"), target.width, spring, window, cx);
+        let h = gpui_kit::base::spring((photo.slot, "wall-height"), target.height, spring, window, cx);
         let (screen_x, screen_y) = self.camera.world_to_screen(x, y);
         let width = w * self.camera.zoom;
         let height = h * self.camera.zoom;
         let art: AnyElement = if let Some(preview) = self.preview_paths.get(&index) {
             img(preview.as_path())
-                .id(("thumbnail-image", index))
+                .id(("thumbnail-image", photo.slot))
                 .w_full()
                 .h_full()
                 .object_fit(ObjectFit::Cover)
@@ -551,7 +622,7 @@ impl Gallery {
                 .into_any_element()
         };
         let mut tile = div()
-            .id(("mosaic-tile", index))
+            .id(("mosaic-tile", photo.slot))
             .absolute()
             .left(px(screen_x))
             .top(px(screen_y))
@@ -609,7 +680,7 @@ impl Gallery {
     ) -> AnyElement {
         let photo = &self.photos[index];
         let rect = focus_geometry::focus_rect(
-            layout::tile_rect(index), self.camera, width, height, progress,
+            layout::tile_rect(photo.slot), self.camera, width, height, progress,
         );
         let show_controls = self.focused.is_some() && progress >= 0.88;
         let showing_full_image = self.focused.is_some() && progress >= 0.94;
@@ -621,7 +692,7 @@ impl Gallery {
         };
 
         let image = img(source.as_path())
-            .id(("focus-hero", index))
+            .id(("focus-hero", photo.slot))
             .w_full()
             .h_full()
             .object_fit(if progress >= 0.88 { ObjectFit::Contain } else { ObjectFit::Cover })
@@ -806,10 +877,10 @@ impl Gallery {
                     ),
             );
         } else {
-            let tiles = layout::visible_tiles(self.photos.len(), self.camera, width, height);
+            let tiles = layout::visible_tiles(&self.slots, self.camera, width, height);
             self.request_previews(&tiles, width, height, cx);
             let targets: HashMap<usize, Rect> = self.focused
-                .map(|focus| reflow::focus_reflow(self.photos.len(), focus)
+                .map(|focus| reflow::focus_reflow(&self.slots, focus)
                     .into_iter().map(|tile| (tile.index, tile.rect)).collect())
                 .unwrap_or_default();
             for tile in tiles {

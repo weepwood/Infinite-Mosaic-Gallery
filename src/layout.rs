@@ -55,8 +55,8 @@ pub fn tile_rect(index: usize) -> Rect {
 }
 
 /// Enumerates just blocks intersecting viewport + prefetch margin, never all N images.
-pub fn visible_tiles(count: usize, camera: Camera, width: f32, height: f32) -> Vec<Tile> {
-    if count == 0 || width <= 0.0 || height <= 0.0 {
+pub fn visible_tiles(slots: &[usize], camera: Camera, width: f32, height: f32) -> Vec<Tile> {
+    if slots.is_empty() || width <= 0.0 || height <= 0.0 {
         return Vec::new();
     }
     let pad = 320.0 / camera.zoom;
@@ -66,10 +66,10 @@ pub fn visible_tiles(count: usize, camera: Camera, width: f32, height: f32) -> V
     let max_col = (((right + pad) / BLOCK_WIDTH).ceil() as isize)
         .clamp(0, BLOCK_COLUMNS as isize) as usize;
     let min_row = (((top - pad) / BLOCK_HEIGHT).floor() as isize).max(0) as usize;
-    let total_rows = count.div_ceil(TILES_PER_BLOCK * BLOCK_COLUMNS);
+    // Sparse slots can extend far beyond the number of currently visible photos.
+    let total_rows = (slots.last().copied().unwrap_or(0) / TILES_PER_BLOCK / BLOCK_COLUMNS) + 1;
     let max_row = (((bottom + pad) / BLOCK_HEIGHT).ceil() as isize)
         .clamp(0, total_rows as isize) as usize;
-
     let view = Rect {
         x: left - pad, y: top - pad,
         width: right - left + pad * 2.0,
@@ -80,9 +80,11 @@ pub fn visible_tiles(count: usize, camera: Camera, width: f32, height: f32) -> V
         for col in min_col..max_col {
             let base = (row * BLOCK_COLUMNS + col) * TILES_PER_BLOCK;
             for offset in 0..TILES_PER_BLOCK {
-                let index = base + offset;
-                if index >= count { break }
-                let rect = tile_rect(index);
+                let slot = base + offset;
+                // O(log N): even 50,000 images with thousands of missing slots
+                // do not require a full image vector scan on each frame.
+                let Ok(index) = slots.binary_search(&slot) else { continue };
+                let rect = tile_rect(slot);
                 if rect.intersects(&view) {
                     visible.push(Tile { index, rect });
                 }
@@ -121,8 +123,32 @@ mod tests {
     }
 
     #[test]
+    fn deleting_one_photo_does_not_move_another_photo() {
+        let original = [0, 1, 2, 3, 12, 13];
+        let after_delete = [0, 2, 3, 12, 13];
+        let visible_before = visible_tiles(&original, Camera::default(), 1680.0, 1000.0);
+        let visible_after = visible_tiles(&after_delete, Camera::default(), 1680.0, 1000.0);
+        for tile in &visible_after {
+            let slot = after_delete[tile.index];
+            let previous = visible_before.iter().find(|other| original[other.index] == slot).unwrap();
+            assert_eq!(previous.rect, tile.rect);
+        }
+        assert!(visible_after.iter().all(|tile| after_delete[tile.index] != 1));
+    }
+
+    #[test]
+    fn viewport_search_is_bounded_for_extremely_sparse_slots() {
+        let slots: Vec<usize> = (0..50_000).map(|slot| slot * 29).collect();
+        let camera = Camera { x: 0.0, y: -200_000.0, zoom: 0.8 };
+        let visible = visible_tiles(&slots, camera, 1920.0, 1080.0);
+        assert!(visible.len() < 220);
+        assert!(visible.iter().all(|tile| slots[tile.index] < 1_450_000));
+    }
+
+    #[test]
     fn viewport_work_is_bounded_for_huge_libraries() {
-        let tiles = visible_tiles(100_000, Camera::default(), 1440.0, 900.0);
+        let slots: Vec<usize> = (0..100_000).collect();
+        let tiles = visible_tiles(&slots, Camera::default(), 1440.0, 900.0);
         assert!(!tiles.is_empty());
         assert!(tiles.len() < 200, "should cull invisible tiles");
     }

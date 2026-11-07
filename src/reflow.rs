@@ -51,14 +51,15 @@ fn split_region(region: Region, count: usize) -> Vec<Region> {
 
 /// Reflow just the focus photo's block. It preserves photo identity, never duplicates
 /// entries and never changes the positions of tiles in other blocks.
-pub fn focus_reflow(count: usize, focus: usize) -> Vec<Tile> {
-    if focus >= count { return Vec::new() }
-    let block = focus / TILES_PER_BLOCK;
-    let start = block * TILES_PER_BLOCK;
-    let end = (start + TILES_PER_BLOCK).min(count);
+pub fn focus_reflow(slots: &[usize], focus: usize) -> Vec<Tile> {
+    let Some(&focus_slot) = slots.get(focus) else { return Vec::new() };
+    let block = focus_slot / TILES_PER_BLOCK;
+    let first_slot = block * TILES_PER_BLOCK;
+    let start = slots.partition_point(|slot| *slot < first_slot);
+    let end = slots.partition_point(|slot| *slot < first_slot + TILES_PER_BLOCK);
     let block_x = (block % BLOCK_COLUMNS) as f32 * BLOCK_WIDTH;
     let block_y = (block / BLOCK_COLUMNS) as f32 * BLOCK_HEIGHT;
-    let original = tile_rect(focus);
+    let original = tile_rect(focus_slot);
     let local_x = (original.x - block_x) / PITCH;
     let local_y = (original.y - block_y) / PITCH;
     let center_x = local_x + (original.width + GAP) / PITCH / 2.0;
@@ -94,7 +95,7 @@ pub fn focus_reflow(count: usize, focus: usize) -> Vec<Tile> {
     let others: Vec<usize> = (start..end).filter(|index| *index != focus).collect();
     let mut candidates = Vec::new();
     for (original_offset, index) in others.iter().enumerate() {
-        let source = tile_rect(*index);
+        let source = tile_rect(slots[*index]);
         let source_x = (source.x - block_x + source.width / 2.0) / PITCH;
         let source_y = (source.y - block_y + source.height / 2.0) / PITCH;
         for (slot, zone) in slots.iter().enumerate() {
@@ -131,7 +132,8 @@ mod tests {
     fn every_focus_produces_disjoint_tiles_inside_its_original_block() {
         for count in 1..=66 {
             for focus in 0..count {
-                let targets = focus_reflow(count, focus);
+                let slots: Vec<usize> = (0..count).collect();
+                let targets = focus_reflow(&slots, focus);
                 let block = focus / TILES_PER_BLOCK;
                 let block_x = (block % BLOCK_COLUMNS) as f32 * BLOCK_WIDTH;
                 let block_y = (block / BLOCK_COLUMNS) as f32 * BLOCK_HEIGHT;
@@ -153,8 +155,22 @@ mod tests {
     }
 
     #[test]
+    fn reflow_only_uses_occupied_slots_in_the_same_block() {
+        let slots = [0, 3, 7, 12, 15, 39];
+        let items = focus_reflow(&slots, 1);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items.iter().map(|tile| slots[tile.index]).collect::<Vec<_>>(), vec![0, 3, 7]);
+        for i in 0..items.len() {
+            for other in items.iter().skip(i + 1) {
+                assert!(!items[i].rect.intersects(&other.rect));
+            }
+        }
+    }
+
+    #[test]
     fn focus_uses_exactly_six_by_six_grid_cells() {
-        let result = focus_reflow(12, 5);
+        let slots: Vec<usize> = (0..12).collect();
+        let result = focus_reflow(&slots, 5);
         let focus = result.iter().find(|tile| tile.index == 5).unwrap().rect;
         assert!((focus.width - (6.0 * PITCH - GAP)).abs() < 0.001);
         assert!((focus.height - (6.0 * PITCH - GAP)).abs() < 0.001);

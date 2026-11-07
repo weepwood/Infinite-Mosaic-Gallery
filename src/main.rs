@@ -5,6 +5,7 @@ mod image_cache;
 mod reflow;
 mod focus_geometry;
 mod watcher;
+mod slots;
 mod thumbnails;
 mod layout;
 
