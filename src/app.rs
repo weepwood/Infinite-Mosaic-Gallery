@@ -195,7 +195,7 @@ impl Gallery {
         self.drag = None;
     }
 
-    fn on_wheel(&mut self, event: &ScrollWheelEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_wheel(&mut self, event: &ScrollEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if self.focused.is_some() || self.photos.is_empty() {
             return;
         }
@@ -390,7 +390,7 @@ impl Gallery {
                     .left_0()
                     .right_0()
                     .h(px(height.min(120.0)))
-                    .bg(linear_gradient(180.0, rgba(0x00000000), rgba(0x000000e8)))
+                    .bg(linear_gradient(180.0, hsla(0.0, 0.0, 0.0, 0.0), hsla(0.0, 0.0, 0.0, 0.91)))
                     .flex()
                     .flex_col()
                     .justify_end()
@@ -440,6 +440,7 @@ impl Gallery {
             .h(px(height))
             .child(
                 div()
+                    .id("focus-backdrop")
                     .absolute()
                     .top_0()
                     .left_0()
@@ -449,6 +450,7 @@ impl Gallery {
             )
             .child(
                 div()
+                    .id("focus-panel")
                     .absolute()
                     .left(px(left))
                     .top(px(top))
@@ -545,7 +547,7 @@ impl Gallery {
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            .on_scroll_wheel(cx.listener(Self::on_wheel));
+            .on_scroll(cx.listener(Self::on_wheel));
 
         if self.photos.is_empty() {
             let message = if self.loading {
