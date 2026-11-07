@@ -739,6 +739,7 @@ impl Gallery {
             .border_1()
             .border_color(rgb(0x252329))
             .on_click(|_, _, cx| cx.stop_propagation())
+             .image_cache(self.focus_images.clone())
             .child(image);
 
         if show_controls {
@@ -901,14 +902,15 @@ impl Gallery {
             }
             if let Some(index) = self.presented.filter(|_| progress > 0.001) {
                 // Keep the outgoing photo until the morph fully returns to its tile.
-                surface = surface.child(
-                    image_cache(self.focus_images.clone())
-                        .child(self.focus_overlay(index, width, height, progress, cx)),
-                );
+                surface = surface.child(self.focus_overlay(index, width, height, progress, cx));
             }
         }
         // Never use the App-wide retain-all cache for an unbounded photo collection.
-        image_cache(self.images.clone()).child(surface).into_any_element()
+        // Important: the wall itself must be the flex:1 child of the window.
+        // Wrapping it in a layout-neutral image_cache(...) element causes its
+        // flex sizing to be lost: the status bar sits directly below the
+        // toolbar and all tiles are clipped by the zero-height wall.
+        surface.image_cache(self.images.clone()).into_any_element()
     }
 }
 

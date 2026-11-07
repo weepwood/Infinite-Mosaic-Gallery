@@ -11,9 +11,9 @@
 - GPUI 原生异步文件夹选择器
 - 自研确定性 Mosaic 几何布局和可见区域裁剪
 
-## 新版本 · v0.4.1
+## 新版本 · v0.4.2
 
-本版完成发布前代码审查与稳定性修复：合并密集文件监听事件引发的后台扫描、过滤无关普通文件变动，并校验缩略图写入及原图修改时序。请查看 [v0.4.1 发布说明](docs/RELEASE-v0.4.1.md) 和 [GitHub Releases](https://github.com/weepwood/Infinite-Mosaic-Gallery/releases)。发布工作流对 Linux、Windows 和 macOS 进行原生构建；首次版本的压缩包均为未签名的便携程序，不是安装包。
+修复 Windows v0.4.1 实测发现的**图片已扫描且缩略图已生成，但画布完全黑屏**问题：GPUI 图片缓存包装元素改变了 Flex 布局，导致画布高度收缩为 0、状态栏被推至工具栏下方。本次让画布直接作为主窗口 `flex_1` 子元素，并将图片缓存直接绑定到现有画布及聚焦面板。详见 [v0.4.2 修复说明](docs/RELEASE-v0.4.2.md) 和 [GitHub Releases](https://github.com/weepwood/Infinite-Mosaic-Gallery/releases)。
 
 ## 快速开始
 

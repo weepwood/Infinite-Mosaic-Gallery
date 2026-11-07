@@ -1,4 +1,4 @@
-name: Build and publish v0.4.1
+name: Build and publish v0.4.2
 
 # Review the full OS matrix in a PR. The new workflow file on main
 # bootstraps this release once; normal source commits don't auto-publish.
@@ -95,7 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')
-          test "$VERSION" = "0.4.1"
+          test "$VERSION" = "0.4.2"
           test "$(find dist -maxdepth 1 -name '*.sha256' | wc -l)" -eq 3
           (cd dist && sha256sum -c -- *.sha256)
           TAG="v${VERSION}"
@@ -105,5 +105,5 @@ jobs:
           fi
           gh release create "$TAG" dist/* --target "$GITHUB_SHA" \
             --title "Infinite Mosaic Gallery v${VERSION}" \
-            --notes-file docs/RELEASE-v0.4.1.md \
+            --notes-file docs/RELEASE-v0.4.2.md \
             --latest
