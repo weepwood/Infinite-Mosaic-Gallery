@@ -6,7 +6,7 @@ use gpui_kit::*;
 use crate::camera::Camera;
 use crate::catalog::{self, Photo};
 use crate::layout::{self, Rect, Tile};
-use crate::{thumbnails, image_cache::RecentImageCache, reflow};
+use crate::{thumbnails, image_cache::RecentImageCache, reflow, focus_geometry};
 
 const HEADER_HEIGHT: f32 = 68.0;
 const FOOTER_HEIGHT: f32 = 36.0;
@@ -27,6 +27,8 @@ pub struct Gallery {
     photos: Vec<Photo>,
     camera: Camera,
     focused: Option<usize>,
+    /// Last selected item remains mounted until the closing spring reaches zero.
+    presented: Option<usize>,
     recursive: bool,
     show_titles: bool,
     loading: bool,
@@ -50,6 +52,7 @@ impl Gallery {
             photos: Vec::new(),
             camera: Camera::default(),
             focused: None,
+            presented: None,
             recursive: false,
             show_titles: true,
             loading: false,
@@ -80,6 +83,7 @@ impl Gallery {
         self.preview_failures.clear();
         self.preview_inflight.clear();
         self.focused = None;
+        self.presented = None;
         self.drag = None;
         self.camera = Camera::default();
         self.loading = true;
@@ -157,6 +161,7 @@ impl Gallery {
         }
         if index < self.photos.len() {
             self.focused = Some(index);
+            self.presented = Some(index);
             cx.notify();
         }
     }
@@ -177,7 +182,9 @@ impl Gallery {
     fn shift_focus(&mut self, direction: isize, cx: &mut Context<Self>) {
         if let Some(current) = self.focused {
             let last = self.photos.len().saturating_sub(1) as isize;
-            self.focused = Some((current as isize + direction).clamp(0, last) as usize);
+            let index = (current as isize + direction).clamp(0, last) as usize;
+            self.focused = Some(index);
+            self.presented = Some(index);
             cx.notify();
         }
     }
@@ -514,30 +521,133 @@ impl Gallery {
                     ),
             );
         }
-        if self.focused.is_some() {
-            tile = tile.child(
-                div().absolute().top_0().left_0().size_full().bg(rgba(0x00000038)),
-            );
-        }
+        // Dimming is owned by the shared-space backdrop; the underlying
+        // tile never changes its color abruptly during the transition.
         tile.on_click(cx.listener(move |view, _, _, cx| view.select(index, cx)))
             .into_any_element()
     }
 
-    fn focus_overlay(&self, index: usize, width: f32, height: f32, cx: &mut Context<Self>) -> AnyElement {
+    /// Shared-space inspector. It begins at the exact screen-space tile bounds,
+    /// morphs to a centered lightbox, and reverses to the same tile on close.
+    /// Keeping the last selected index mounted preserves the exit animation.
+    fn focus_overlay(
+        &self,
+        index: usize,
+        width: f32,
+        height: f32,
+        progress: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let photo = &self.photos[index];
-        let world_rect = reflow::focus_reflow(self.photos.len(), index)
-            .into_iter().find(|tile| tile.index == index)
-            .map(|tile| tile.rect)
-            .unwrap_or_else(|| layout::tile_rect(index));
-        let (screen_x, screen_y) = self.camera.world_to_screen(
-            world_rect.x + world_rect.width * 0.5,
-            world_rect.y + world_rect.height * 0.5,
+        let rect = focus_geometry::focus_rect(
+            layout::tile_rect(index), self.camera, width, height, progress,
         );
-        let panel_w = (width - 48.0).clamp(240.0, 860.0);
-        let panel_h = (height - 48.0).clamp(240.0, 680.0);
-        let left = (screen_x - panel_w / 2.0).clamp(24.0, (width - panel_w - 24.0).max(24.0));
-        let top = (screen_y - panel_h / 2.0).clamp(24.0, (height - panel_h - 24.0).max(24.0));
+        let show_controls = self.focused.is_some() && progress >= 0.88;
+        let showing_full_image = self.focused.is_some() && progress >= 0.94;
+        let preview = self.preview_paths.get(&index).cloned();
+        let source = if showing_full_image {
+            photo.path.clone()
+        } else {
+            preview.clone().unwrap_or_else(|| photo.path.clone())
+        };
 
+        let image = img(source.as_path())
+            .id(("focus-hero", index))
+            .w_full()
+            .h_full()
+            .object_fit(if progress >= 0.88 { ObjectFit::Contain } else { ObjectFit::Cover })
+            .with_loading(move || {
+                if let Some(path) = preview.as_ref() {
+                    img(path.as_path())
+                        .w_full().h_full().object_fit(ObjectFit::Contain)
+                        .into_any_element()
+                } else {
+                    div().size_full()
+                        .flex().items_center().justify_center()
+                        .text_size(px(12.0)).text_color(rgb(MUTED))
+                        .child("正在加载图片…").into_any_element()
+                }
+            })
+            .with_fallback(|| {
+                div().size_full()
+                    .flex().items_center().justify_center()
+                    .text_color(rgb(MUTED))
+                    .child("无法读取图片").into_any_element()
+            });
+
+        let mut panel = div()
+            .id("focus-panel")
+            .absolute()
+            .left(px(rect.x))
+            .top(px(rect.y))
+            .w(px(rect.width.max(1.0)))
+            .h(px(rect.height.max(1.0)))
+            .overflow_hidden()
+            .bg(rgb(0x0d0d0f))
+            .border_1()
+            .border_color(rgb(0x252329))
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(image);
+
+        if show_controls {
+            panel = panel
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(48.0))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .px_4()
+                        .bg(rgba(0x111114df))
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(rgb(FOREGROUND))
+                                .child(format!("{:04} / {:04}", index + 1, self.photos.len())),
+                        )
+                        .child(
+                            Button::new("focus-close")
+                                .label("关闭 ×")
+                                .on_click(cx.listener(Self::close_focus)),
+                        ),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(62.0))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .px_4()
+                        .bg(rgba(0x111114eb))
+                        .child(
+                            Button::new("focus-prev")
+                                .label("← 上一张")
+                                .on_click(cx.listener(Self::previous_focus)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .text_size(px(13.0))
+                                .text_color(rgb(FOREGROUND))
+                                .child(photo.title.clone()),
+                        )
+                        .child(
+                            Button::new("focus-next")
+                                .label("下一张 →")
+                                .on_click(cx.listener(Self::next_focus)),
+                        ),
+                );
+        }
         div()
             .absolute()
             .top_0()
@@ -551,106 +661,28 @@ impl Gallery {
                     .top_0()
                     .left_0()
                     .size_full()
-                    .bg(rgba(0x00000088))
+                    .bg(rgba(0x000000c8))
+                    .opacity(progress.clamp(0.0, 1.0))
                     .on_click(cx.listener(Self::close_focus)),
             )
-            .child(
-                div()
-                    .id("focus-panel")
-                    .absolute()
-                    .left(px(left))
-                    .top(px(top))
-                    .w(px(panel_w))
-                    .h(px(panel_h))
-                    .flex()
-                    .flex_col()
-                    .overflow_hidden()
-                    .border_1()
-                    .border_color(rgb(0xccc8c2))
-                    .bg(rgb(0x111114))
-                    .on_click(|_, _, cx| cx.stop_propagation())
-                    .child(
-                        div()
-                            .h(px(46.0))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .px_4()
-                            .bg(rgb(0x19181c))
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(rgb(FOREGROUND))
-                                    .child(format!("{} / {}", index + 1, self.photos.len())),
-                            )
-                            .child(
-                                Button::new("focus-close")
-                                    .label("关闭 ×")
-                                    .on_click(cx.listener(Self::close_focus)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h(px(0.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .bg(rgb(0x080809))
-                            .child(
-                                img(photo.path.as_path())
-                                    .id("focused-image")
-                                    .w_full()
-                                    .h_full()
-                                    .object_fit(ObjectFit::Contain)
-                                    .with_loading(|| {
-                                        div().size_full().flex().items_center().justify_center()
-                                            .text_color(rgb(MUTED)).child("正在载入原图…")
-                                            .into_any_element()
-                                    })
-                                    .with_fallback(|| {
-                                        div().size_full().flex().items_center().justify_center()
-                                            .text_color(rgb(MUTED)).child("原图读取失败")
-                                            .into_any_element()
-                                    }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .h(px(64.0))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_2()
-                            .px_4()
-                            .bg(rgb(0x19181c))
-                            .child(
-                                Button::new("focus-prev")
-                                    .label("← 上一张")
-                                    .on_click(cx.listener(Self::previous_focus)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .text_size(px(13.0))
-                                    .text_color(rgb(FOREGROUND))
-                                    .child(photo.title.clone()),
-                            )
-                            .child(
-                                Button::new("focus-next")
-                                    .label("下一张 →")
-                                    .on_click(cx.listener(Self::next_focus)),
-                            ),
-                    ),
-            )
+            .child(panel)
             .into_any_element()
     }
 
     fn canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let (width, height) = Self::canvas_size(window);
+        // Sample even while closed, so the first click animates from zero.
+        // GPUI Base handles retargeting and the OS reduced-motion setting.
+        let progress = gpui_kit::base::spring(
+            "gallery-focus-morph",
+            if self.focused.is_some() { 1.0f32 } else { 0.0f32 },
+            gpui_kit::base::Spring::new(Duration::from_millis(430)).with_damping(0.88),
+            window,
+            cx,
+        ).clamp(0.0, 1.0);
+        if self.focused.is_none() && progress <= 0.001 {
+            self.presented = None;
+        }
         let mut surface = div()
             .id("mosaic-wall")
             .relative()
@@ -715,11 +747,11 @@ impl Gallery {
                 let target = targets.get(&tile.index).copied().unwrap_or(tile.rect);
                 surface = surface.child(self.tile(tile.index, target, window, cx));
             }
-            if let Some(index) = self.focused {
-                // Full-resolution focus photos use a separate tiny texture cache.
+            if let Some(index) = self.presented.filter(|_| progress > 0.001) {
+                // Keep the outgoing photo until the morph fully returns to its tile.
                 surface = surface.child(
                     image_cache(self.focus_images.clone())
-                        .child(self.focus_overlay(index, width, height, cx)),
+                        .child(self.focus_overlay(index, width, height, progress, cx)),
                 );
             }
         }
