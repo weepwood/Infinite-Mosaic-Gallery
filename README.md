@@ -37,7 +37,7 @@ cargo run --release -- /path/to/photos
 
 ## 已知边界
 
-当前版本已经实现按视口生成缩略图、磁盘缓存和有界 GPU 图片缓存，但仍未完成真实磁贴弹簧让位、文件变动监听及发布级性能验收。不要把 MVP 当作已通过大型图库的生产版本。
+当前版本已经实现按视口生成缩略图、磁盘缓存、有界 GPU 图片缓存，以及聚焦时同一几何块内的磁贴弹簧让位；仍未完成聚焦面板的真正共享元素展开、文件变动监听及发布级性能验收。不要把 MVP 当作已通过大型图库的生产版本。
 
 项目借鉴 [Peach Video Wall](https://github.com/peach-mitao/peach) 和 [Folia PosterWall](https://github.com/chthollyphile/folia-major) 的视觉语言，但几何模板和实现为本项目原创，没有直接复制 AGPL 代码。
 

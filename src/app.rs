@@ -1,12 +1,12 @@
 //! GPUI native presentation. Geometry, image catalog and camera math are testable
 //! without instantiating a GPU window.
-use std::{collections::{HashMap, HashSet}, path::PathBuf};
+use std::{collections::{HashMap, HashSet}, path::PathBuf, time::Duration};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::*;
 use crate::camera::Camera;
 use crate::catalog::{self, Photo};
 use crate::layout::{self, Rect, Tile};
-use crate::{thumbnails, image_cache::RecentImageCache};
+use crate::{thumbnails, image_cache::RecentImageCache, reflow};
 
 const HEADER_HEIGHT: f32 = 68.0;
 const FOOTER_HEIGHT: f32 = 36.0;
@@ -435,11 +435,18 @@ impl Gallery {
         }
     }
 
-    fn tile(&self, index: usize, world_rect: Rect, cx: &mut Context<Self>) -> AnyElement {
+    fn tile(&self, index: usize, target: Rect, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let photo = &self.photos[index];
-        let (screen_x, screen_y) = self.camera.world_to_screen(world_rect.x, world_rect.y);
-        let width = world_rect.width * self.camera.zoom;
-        let height = world_rect.height * self.camera.zoom;
+        // Each tile owns four stable, interruptible spring channels.
+        // GPUI Base motion honors the platform's reduced-motion preference.
+        let spring = gpui_kit::base::Spring::new(Duration::from_millis(390)).with_damping(0.84);
+        let x = gpui_kit::base::spring((index, "wall-x"), target.x, spring, window, cx);
+        let y = gpui_kit::base::spring((index, "wall-y"), target.y, spring, window, cx);
+        let w = gpui_kit::base::spring((index, "wall-width"), target.width, spring, window, cx);
+        let h = gpui_kit::base::spring((index, "wall-height"), target.height, spring, window, cx);
+        let (screen_x, screen_y) = self.camera.world_to_screen(x, y);
+        let width = w * self.camera.zoom;
+        let height = h * self.camera.zoom;
         let art: AnyElement = if let Some(preview) = self.preview_paths.get(&index) {
             img(preview.as_path())
                 .id(("thumbnail-image", index))
@@ -509,7 +516,7 @@ impl Gallery {
         }
         if self.focused.is_some() {
             tile = tile.child(
-                div().absolute().top_0().left_0().size_full().bg(rgba(0x000000aa)),
+                div().absolute().top_0().left_0().size_full().bg(rgba(0x00000038)),
             );
         }
         tile.on_click(cx.listener(move |view, _, _, cx| view.select(index, cx)))
@@ -518,7 +525,10 @@ impl Gallery {
 
     fn focus_overlay(&self, index: usize, width: f32, height: f32, cx: &mut Context<Self>) -> AnyElement {
         let photo = &self.photos[index];
-        let world_rect = layout::tile_rect(index);
+        let world_rect = reflow::focus_reflow(self.photos.len(), index)
+            .into_iter().find(|tile| tile.index == index)
+            .map(|tile| tile.rect)
+            .unwrap_or_else(|| layout::tile_rect(index));
         let (screen_x, screen_y) = self.camera.world_to_screen(
             world_rect.x + world_rect.width * 0.5,
             world_rect.y + world_rect.height * 0.5,
@@ -541,7 +551,7 @@ impl Gallery {
                     .top_0()
                     .left_0()
                     .size_full()
-                    .bg(rgba(0x000000b0))
+                    .bg(rgba(0x00000088))
                     .on_click(cx.listener(Self::close_focus)),
             )
             .child(
@@ -697,8 +707,13 @@ impl Gallery {
         } else {
             let tiles = layout::visible_tiles(self.photos.len(), self.camera, width, height);
             self.request_previews(&tiles, width, height, cx);
+            let targets: HashMap<usize, Rect> = self.focused
+                .map(|focus| reflow::focus_reflow(self.photos.len(), focus)
+                    .into_iter().map(|tile| (tile.index, tile.rect)).collect())
+                .unwrap_or_default();
             for tile in tiles {
-                surface = surface.child(self.tile(tile.index, tile.rect, cx));
+                let target = targets.get(&tile.index).copied().unwrap_or(tile.rect);
+                surface = surface.child(self.tile(tile.index, target, window, cx));
             }
             if let Some(index) = self.focused {
                 // Full-resolution focus photos use a separate tiny texture cache.

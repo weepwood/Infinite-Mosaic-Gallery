@@ -2,6 +2,7 @@ mod app;
 mod camera;
 mod catalog;
 mod image_cache;
+mod reflow;
 mod thumbnails;
 mod layout;
 

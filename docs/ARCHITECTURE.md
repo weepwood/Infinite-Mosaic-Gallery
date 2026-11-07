@@ -27,6 +27,7 @@ native window / GPUI Kit
 | `src/catalog.rs` | 照片格式判断、目录枚举、排序 |
 | `src/camera.rs` | 世界坐标与视口变换、缩放与平移 |
 | `src/layout.rs` | 原创不重叠布局模板、只生成可见磁贴 |
+| `src/reflow.rs` | 6×6 焦点区域、剩余区域几何分配、最短位移匹配与纯函数测试 |
 | `src/thumbnails.rs` | 限额解码、EXIF 方向、768px PNG、内容版本键、原子写入及周期清理 |
 | `src/image_cache.rs` | GPUI ImageCache LRU（128 个条目，淘汰时释放 GPU 纹理） |
 
@@ -51,3 +52,7 @@ v0.2 的磁贴不再读取原图，而是使用 3 个后台并发任务生成 76
 - [Folia](https://github.com/chthollyphile/folia-major)：布局思想参考；上游项目 AGPL
 
 本仓库的 12×8 模板独立设计，不复制 Folia 的模板数组或实现代码。
+
+## 交互运动
+
+选中图片时只对同一 12×8 几何块的磁贴计算新目标，其他块的目标矩形不变。GPUI Base spring 为每个图片 ID 的 x/y/width/height 建立稳定通道；取消聚焦时目标恢复原位置，Motion 自动连续收敛。弹簧不是帧驱动的数据模型：布局目标与图片身份始终是唯一事实来源。
