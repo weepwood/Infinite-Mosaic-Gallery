@@ -390,7 +390,7 @@ impl Gallery {
                     .left_0()
                     .right_0()
                     .h(px(height.min(120.0)))
-                    .bg(linear_gradient(180.0, hsla(0.0, 0.0, 0.0, 0.0), hsla(0.0, 0.0, 0.0, 0.91)))
+                    .bg(linear_gradient(180.0, linear_color_stop(hsla(0.0, 0.0, 0.0, 0.0), 0.0), linear_color_stop(hsla(0.0, 0.0, 0.0, 0.91), 1.0)))
                     .flex()
                     .flex_col()
                     .justify_end()
