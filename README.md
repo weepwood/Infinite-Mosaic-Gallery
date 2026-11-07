@@ -11,6 +11,10 @@
 - GPUI 原生异步文件夹选择器
 - 自研确定性 Mosaic 几何布局和可见区域裁剪
 
+## 新版本 · v0.4.1
+
+本版完成发布前代码审查与稳定性修复：合并密集文件监听事件引发的后台扫描、过滤无关普通文件变动，并校验缩略图写入及原图修改时序。请查看 [v0.4.1 发布说明](docs/RELEASE-v0.4.1.md) 和 [GitHub Releases](https://github.com/weepwood/Infinite-Mosaic-Gallery/releases)。发布工作流对 Linux、Windows 和 macOS 进行原生构建；首次版本的压缩包均为未签名的便携程序，不是安装包。
+
 ## 快速开始
 
 ```bash

@@ -1,7 +1,7 @@
 //! On-demand persistent previews. Reads source folders without modifying them.
 use std::{
     fs,
-    io::BufWriter,
+    io::{BufWriter, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
     time::UNIX_EPOCH,
@@ -73,6 +73,17 @@ pub fn generate_preview(path: &Path) -> Result<PathBuf, String> {
         let mut writer = BufWriter::new(temporary.as_file_mut());
         resized.write_to(&mut writer, ImageFormat::Png)
             .map_err(|err| format!("无法编码缩略图：{err}"))?;
+        // BufWriter::drop silently ignores errors. Flush explicitly before
+        // publishing a visible PNG file to other GPUI image loaders.
+        writer.flush().map_err(|err| format!("写入缩略图失败：{err}"))?;
+    }
+    // If the image changed while decoding, don't publish pixels under an old
+    // size/mtime cache key. The next filesystem event/refresh can retry.
+    let after = fs::metadata(path)
+        .map_err(|err| format!("图片在预览生成期间无法访问：{err}"))?;
+    if after.len() != metadata.len() ||
+       after.modified().ok() != metadata.modified().ok() {
+        return Err("图片正在修改，稍后重试或刷新图库".into());
     }
     // Avoid partial/overwritten files if two jobs raced on the same photo.
     match temporary.persist_noclobber(&output) {
