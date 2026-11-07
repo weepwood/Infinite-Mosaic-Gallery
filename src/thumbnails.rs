@@ -1,6 +1,6 @@
 //! On-demand persistent previews. Reads source folders without modifying them.
 use std::{
-    fs::{self, File},
+    fs,
     io::BufWriter,
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
@@ -57,7 +57,12 @@ pub fn generate_preview(path: &Path) -> Result<PathBuf, String> {
     let mut image = DynamicImage::from_decoder(decoder)
         .map_err(|err| format!("图片解码失败：{err}"))?;
     image.apply_orientation(orientation);
-    let resized = image.thumbnail(PREVIEW_EDGE, PREVIEW_EDGE);
+    // The image crate's thumbnail() may upscale tiny images; never do that.
+    let resized = if image.width() <= PREVIEW_EDGE && image.height() <= PREVIEW_EDGE {
+        image
+    } else {
+        image.thumbnail(PREVIEW_EDGE, PREVIEW_EDGE)
+    };
 
     fs::create_dir_all(&directory)
         .map_err(|err| format!("无法创建应用缓存目录：{err}"))?;
