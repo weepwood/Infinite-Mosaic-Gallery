@@ -1,0 +1,109 @@
+name: Build and publish v0.4.1
+
+# Review the full OS matrix in a PR. The new workflow file on main
+# bootstraps this release once; normal source commits don't auto-publish.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/release.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mosaic-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Lock all dependency versions
+        run: cargo generate-lockfile
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-cargo-lock
+          path: Cargo.lock
+          if-no-files-found: error
+
+  package:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-cargo-lock
+          path: .
+      - uses: Swatinem/rust-cache@v2
+      - name: Install GPUI Kit Linux prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ clang pkg-config libfontconfig-dev libwayland-dev \
+            libwebkit2gtk-4.1-dev libxkbcommon-x11-dev libx11-xcb-dev \
+            libssl-dev libzstd-dev libasound2-dev vulkan-validationlayers libvulkan1
+      - name: Build native executable
+        run: cargo build --release --locked
+      - name: Package portable executable and checksums
+        run: python .github/scripts/package_release.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: "release-dist-${{ matrix.os }}"
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-dist-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-cargo-lock
+          path: dist
+      - name: Verify archives and publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')
+          test "$VERSION" = "0.4.1"
+          test "$(find dist -maxdepth 1 -name '*.sha256' | wc -l)" -eq 3
+          (cd dist && sha256sum -c -- *.sha256)
+          TAG="v${VERSION}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; refusing to replace published files."
+            exit 0
+          fi
+          gh release create "$TAG" dist/* --target "$GITHUB_SHA" \
+            --title "Infinite Mosaic Gallery v${VERSION}" \
+            --notes-file docs/RELEASE-v0.4.1.md \
+            --latest

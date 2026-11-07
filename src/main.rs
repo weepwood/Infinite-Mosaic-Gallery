@@ -6,6 +6,7 @@ mod reflow;
 mod focus_geometry;
 mod watcher;
 mod slots;
+mod scan_gate;
 mod thumbnails;
 mod layout;
 

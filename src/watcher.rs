@@ -3,7 +3,7 @@
 //! on the GPUI executor.
 use std::path::Path;
 use async_channel::Sender;
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher, event::ModifyKind};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher, event::{CreateKind, ModifyKind, RemoveKind}};
 
 use crate::catalog::is_photo;
 
@@ -11,6 +11,10 @@ use crate::catalog::is_photo;
 /// Ordinary writes only matter for supported image extensions.
 pub fn affects_gallery(event: &Event) -> bool {
     match &event.kind {
+        EventKind::Create(CreateKind::Folder) | EventKind::Remove(RemoveKind::Folder) => true,
+        EventKind::Create(CreateKind::File) | EventKind::Remove(RemoveKind::File) =>
+            event.paths.iter().any(|path| is_photo(path)),
+        // Backends that cannot distinguish file/dir kinds must be conservative.
         EventKind::Create(_) | EventKind::Remove(_) => true,
         EventKind::Modify(ModifyKind::Name(_)) => true,
         EventKind::Modify(_) => event.paths.iter().any(|path| is_photo(path)),
@@ -91,6 +95,18 @@ mod tests {
         let index_write = event(EventKind::Create(CreateKind::File),
             "/photos/.local/share/InfiniteMosaicGallery/slots-v1/123.json");
         assert!(!should_rescan(&index_write, &cache, &slot_data));
+    }
+
+    #[test]
+    fn unrelated_files_do_not_rescan_an_entire_library() {
+        let unrelated = event(EventKind::Create(CreateKind::File), "README.md");
+        let deleted = event(EventKind::Remove(RemoveKind::File), "config.txt");
+        let photo = event(EventKind::Create(CreateKind::File), "new-photo.JPG");
+        let folder = event(EventKind::Create(CreateKind::Folder), "folder.txt");
+        assert!(!affects_gallery(&unrelated));
+        assert!(!affects_gallery(&deleted));
+        assert!(affects_gallery(&photo));
+        assert!(affects_gallery(&folder));
     }
 
     #[test]

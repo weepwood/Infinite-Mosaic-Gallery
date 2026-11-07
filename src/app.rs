@@ -6,7 +6,7 @@ use gpui_kit::*;
 use crate::camera::Camera;
 use crate::catalog::{self, Photo};
 use crate::layout::{self, Rect, Tile};
-use crate::{thumbnails, image_cache::RecentImageCache, reflow, focus_geometry, watcher, slots};
+use crate::{thumbnails, image_cache::RecentImageCache, reflow, focus_geometry, watcher, slots, scan_gate::ScanGate};
 
 const HEADER_HEIGHT: f32 = 68.0;
 const FOOTER_HEIGHT: f32 = 36.0;
@@ -37,6 +37,7 @@ pub struct Gallery {
     error: Option<String>,
     generation: u64,
     scan_task: Option<Task<()>>,
+    scan_gate: ScanGate,
     watcher: Option<notify::RecommendedWatcher>,
     watcher_task: Option<Task<()>>,
     watcher_session: u64,
@@ -68,6 +69,7 @@ impl Gallery {
             error: None,
             generation: 0,
             scan_task: None,
+            scan_gate: ScanGate::default(),
             watcher: None,
             watcher_task: None,
             watcher_session: 0,
@@ -148,6 +150,11 @@ impl Gallery {
     }
 
     fn scan(&mut self, folder: PathBuf, preserve_view: bool, cx: &mut Context<Self>) {
+        // Coalesce watcher bursts while a scan runs, rather than launching an
+        // unbounded number of background directory enumerations.
+        if !self.scan_gate.request(preserve_view) {
+            return;
+        }
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         self.folder = Some(folder.clone());
@@ -224,6 +231,11 @@ impl Gallery {
                         // and the camera untouched instead of blanking the wall.
                         view.error = Some(error);
                     }
+                }
+                if view.scan_gate.complete() {
+                    // Exactly one follow-up scan for all notifications received
+                    // during this scan; a newer folder selection supersedes it.
+                    view.reload(cx);
                 }
                 cx.notify();
             });
