@@ -88,7 +88,7 @@ pub fn focus_reflow(slots: &[usize], focus: usize) -> Vec<Tile> {
             .expect("the block always has spare area");
         counts[preferred] += 1;
     }
-    let slots: Vec<Region> = zones.into_iter().zip(counts)
+    let target_regions: Vec<Region> = zones.into_iter().zip(counts)
         .flat_map(|(region, count)| split_region(region, count))
         .collect();
 
@@ -98,7 +98,7 @@ pub fn focus_reflow(slots: &[usize], focus: usize) -> Vec<Tile> {
         let source = tile_rect(slots[*index]);
         let source_x = (source.x - block_x + source.width / 2.0) / PITCH;
         let source_y = (source.y - block_y + source.height / 2.0) / PITCH;
-        for (slot, zone) in slots.iter().enumerate() {
+        for (slot, zone) in target_regions.iter().enumerate() {
             let (x, y) = zone.center();
             let distance = (x - source_x).powi(2) + (y - source_y).powi(2);
             candidates.push((distance, original_offset, slot));
@@ -106,7 +106,7 @@ pub fn focus_reflow(slots: &[usize], focus: usize) -> Vec<Tile> {
     }
     candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut assigned_photos = vec![false; others.len()];
-    let mut assigned_slots = vec![false; slots.len()];
+    let mut assigned_slots = vec![false; target_regions.len()];
     let mut output = vec![Tile {
         index: focus,
         rect: into_world(focus_zone, block_x, block_y),
@@ -117,7 +117,7 @@ pub fn focus_reflow(slots: &[usize], focus: usize) -> Vec<Tile> {
         assigned_slots[slot] = true;
         output.push(Tile {
             index: others[offset],
-            rect: into_world(slots[slot], block_x, block_y),
+            rect: into_world(target_regions[slot], block_x, block_y),
         });
     }
     output.sort_by_key(|tile| tile.index);

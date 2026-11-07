@@ -13,6 +13,8 @@ pub struct Photo {
     pub title: String,
     /// Optional metadata collected off-thread, for safe preview reuse after rescans.
     pub stamp: Option<FileStamp>,
+    /// Persistent layout position, separate from the in-memory vector index.
+    pub slot: usize,
 }
 
 pub fn is_photo(path: &Path) -> bool {
@@ -54,13 +56,16 @@ pub fn scan_folder(folder: &Path, recursive: bool) -> Result<Vec<Photo>, String>
                         modified,
                     })
                 });
-                photos.push(Photo { path, title, stamp });
+                photos.push(Photo { path, title, stamp, slot: 0 });
             }
         }
     }
     photos.sort_by(|a, b| a.path.to_string_lossy()
         .to_lowercase().cmp(&b.path.to_string_lossy().to_lowercase())
         .then_with(|| a.path.cmp(&b.path)));
+    for (slot, photo) in photos.iter_mut().enumerate() {
+        photo.slot = slot;
+    }
     Ok(photos)
 }
 
@@ -88,6 +93,7 @@ mod tests {
             path: PathBuf::from(name),
             title: name.to_string(),
             stamp: None,
+            slot: 0,
         };
         let original = vec![make("b.jpg"), make("z.jpg")];
         let updated = vec![make("a.jpg"), make("b.jpg"), make("z.jpg")];
