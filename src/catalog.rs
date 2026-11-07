@@ -50,6 +50,11 @@ pub fn scan_folder(folder: &Path, recursive: bool) -> Result<Vec<Photo>, String>
     Ok(photos)
 }
 
+/// Finds an existing selection by path rather than its former sort position.
+pub fn restore_selected_index(selected: Option<&Path>, photos: &[Photo]) -> Option<usize> {
+    selected.and_then(|path| photos.iter().position(|photo| photo.path == path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,6 +66,20 @@ mod tests {
         assert!(is_photo(Path::new("中文图片.webp")));
         assert!(!is_photo(Path::new("notes.txt")));
         assert!(!is_photo(Path::new("foo")));
+    }
+
+    #[test]
+    fn selection_survives_insertions_and_deletions() {
+        let make = |name: &str| Photo {
+            path: PathBuf::from(name),
+            title: name.to_string(),
+        };
+        let original = vec![make("b.jpg"), make("z.jpg")];
+        let updated = vec![make("a.jpg"), make("b.jpg"), make("z.jpg")];
+        let selected = original[1].path.as_path();
+        assert_eq!(restore_selected_index(Some(selected), &updated), Some(2));
+        assert_eq!(restore_selected_index(Some(selected), &updated[..2]), None);
+        assert_eq!(restore_selected_index(None, &updated), None);
     }
 
     #[test]

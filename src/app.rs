@@ -1,6 +1,6 @@
 //! GPUI native presentation. Geometry, image catalog and camera math are testable
 //! without instantiating a GPU window.
-use std::{collections::{HashMap, HashSet}, path::PathBuf, time::Duration};
+use std::{collections::{HashMap, HashSet}, path::PathBuf, time::{Duration, Instant}};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::*;
 use crate::camera::Camera;
@@ -40,6 +40,7 @@ pub struct Gallery {
     preview_paths: HashMap<usize, PathBuf>,
     preview_failures: HashMap<usize, String>,
     preview_inflight: HashSet<usize>,
+    last_preview_check: Instant,
     focus_handle: FocusHandle,
     drag: Option<Drag>,
     suppress_click: bool,
@@ -64,6 +65,7 @@ impl Gallery {
             preview_paths: HashMap::new(),
             preview_failures: HashMap::new(),
             preview_inflight: HashSet::new(),
+            last_preview_check: Instant::now(),
             focus_handle: cx.focus_handle().tab_stop(true),
             drag: None,
             suppress_click: false,
@@ -120,15 +122,19 @@ impl Gallery {
                             .and_then(|index| view.photos.get(index))
                             .map(|photo| photo.path.clone());
                         view.photos = photos;
-                        view.focused = selected_path.and_then(|path| {
-                            view.photos.iter().position(|photo| photo.path == path)
-                        });
+                        view.focused = catalog::restore_selected_index(
+                            selected_path.as_deref(),
+                            &view.photos,
+                        );
                         view.presented = view.focused;
-                        // Photo ordering and file versions may have changed.
-                        // Revalidate every preview via the versioned disk cache.
+                        // Recreate decoded-image caches: the same file path can now
+                        // point to different bytes after a user edits the photo.
+                        view.images = RecentImageCache::new(128, cx);
+                        view.focus_images = RecentImageCache::new(2, cx);
                         view.preview_paths.clear();
                         view.preview_failures.clear();
                         view.preview_inflight.clear();
+                        view.last_preview_check = Instant::now();
                     }
                     Err(error) => {
                         // For refresh failures, leave previously visible photos
@@ -422,6 +428,18 @@ impl Gallery {
     /// Render may be called multiple times; inflight/ready/failed state deduplicates it.
     fn request_previews(&mut self, tiles: &[Tile], width: f32, height: f32, cx: &mut Context<Self>) {
         const MAX_INFLIGHT: usize = 3;
+        // Disk LRU pruning may remove older PNGs still indexed in memory.
+        // Check locally cached paths occasionally, not on every render frame.
+        if self.last_preview_check.elapsed() >= Duration::from_secs(3) {
+            for tile in tiles {
+                if self.preview_paths.get(&tile.index)
+                    .is_some_and(|path| !path.is_file())
+                {
+                    self.preview_paths.remove(&tile.index);
+                }
+            }
+            self.last_preview_check = Instant::now();
+        }
         let center_x = width * 0.5;
         let center_y = height * 0.5;
         let mut sorted = tiles.to_vec();
