@@ -34,6 +34,7 @@ pub struct Gallery {
     generation: u64,
     scan_task: Option<Task<()>>,
     images: Entity<RecentImageCache>,
+    focus_images: Entity<RecentImageCache>,
     preview_paths: HashMap<usize, PathBuf>,
     preview_failures: HashMap<usize, String>,
     preview_inflight: HashSet<usize>,
@@ -56,6 +57,7 @@ impl Gallery {
             generation: 0,
             scan_task: None,
             images: RecentImageCache::new(128, cx),
+            focus_images: RecentImageCache::new(2, cx),
             preview_paths: HashMap::new(),
             preview_failures: HashMap::new(),
             preview_inflight: HashSet::new(),
@@ -360,7 +362,7 @@ impl Gallery {
         } else if let Some(error) = &self.error {
             error.clone()
         } else {
-            format!("{} 张图片  ·  缩放 {}%", self.photos.len(), (self.camera.zoom * 100.0).round())
+            format!("{} 张图片  ·  缩放 {}%  ·  预览已就绪 {}  ·  处理中 {}  ·  失败 {}", self.photos.len(), (self.camera.zoom * 100.0).round(), self.preview_paths.len(), self.preview_inflight.len(), self.preview_failures.len())
         };
         div()
             .h(px(FOOTER_HEIGHT))
@@ -699,7 +701,11 @@ impl Gallery {
                 surface = surface.child(self.tile(tile.index, tile.rect, cx));
             }
             if let Some(index) = self.focused {
-                surface = surface.child(self.focus_overlay(index, width, height, cx));
+                // Full-resolution focus photos use a separate tiny texture cache.
+                surface = surface.child(
+                    image_cache(self.focus_images.clone())
+                        .child(self.focus_overlay(index, width, height, cx)),
+                );
             }
         }
         // Never use the App-wide retain-all cache for an unbounded photo collection.
