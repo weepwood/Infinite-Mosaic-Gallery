@@ -30,7 +30,7 @@ output_dir.mkdir(exist_ok=True)
 members = [
     (executable, executable.name),
     (root / "README.md", "README.md"),
-    (root / "docs" / "RELEASE-v0.4.1.md", "RELEASE-NOTES.md"),
+    (root / "docs" / "RELEASE-v0.4.2.md", "RELEASE-NOTES.md"),
 ]
 
 if system == "windows":

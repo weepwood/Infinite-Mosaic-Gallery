@@ -1,6 +1,6 @@
 [package]
 name = "infinite-mosaic-gallery"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 description = "A local-first infinite mosaic photo wall powered by Rust and GPUI Kit"
 repository = "https://github.com/weepwood/Infinite-Mosaic-Gallery"

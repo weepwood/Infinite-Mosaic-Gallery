@@ -146,6 +146,21 @@ mod tests {
     }
 
     #[test]
+    fn initial_five_photos_are_in_the_visible_canvas() {
+        // Regression fixture for Windows v0.4.1: all five thumbnails were
+        // decoded, but a collapsed GPUI canvas prevented them from painting.
+        let slots = [0, 1, 2, 3, 4];
+        let camera = Camera::default();
+        let visible = visible_tiles(&slots, camera, 1440.0, 900.0);
+        assert_eq!(visible.len(), 5);
+        let first = visible.iter().find(|tile| tile.index == 0).unwrap();
+        let (x, y) = camera.world_to_screen(first.rect.x, first.rect.y);
+        assert!(x >= 0.0 && y >= 0.0);
+        assert!(x + first.rect.width * camera.zoom > 0.0);
+        assert!(y + first.rect.height * camera.zoom > 0.0);
+    }
+
+    #[test]
     fn viewport_work_is_bounded_for_huge_libraries() {
         let slots: Vec<usize> = (0..100_000).collect();
         let tiles = visible_tiles(&slots, Camera::default(), 1440.0, 900.0);
