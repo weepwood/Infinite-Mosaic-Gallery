@@ -10,7 +10,12 @@ native window / GPUI Kit
   └── status footer
         ↑
   BackgroundExecutor
-        └── read-only folder enumeration → sorted photo paths
+        ├── read-only folder enumeration → sorted photo paths
+        └── priority preview generation (≤3 concurrent)
+                    ↓
+            versioned PNG disk cache (512 MiB trim)
+                    ↓
+          scoped recent-image cache (128 entries)
 ```
 
 ## 模块边界
@@ -22,16 +27,18 @@ native window / GPUI Kit
 | `src/catalog.rs` | 照片格式判断、目录枚举、排序 |
 | `src/camera.rs` | 世界坐标与视口变换、缩放与平移 |
 | `src/layout.rs` | 原创不重叠布局模板、只生成可见磁贴 |
+| `src/thumbnails.rs` | 限额解码、EXIF 方向、768px PNG、内容版本键、原子写入及周期清理 |
+| `src/image_cache.rs` | GPUI ImageCache LRU（128 个条目，淘汰时释放 GPU 纹理） |
 
 ## 读写策略
 
 - 用户图片：原始路径只读，程序不会删除/修改/重命名。
-- v0.1：不建立数据库，不创建用户数据和缓存目录。
+- v0.2：不建立数据库；仅在系统应用缓存目录创建缩略图。
 - 后续：应用数据路径下保存索引与缩略图，明确缓存配额及清理策略。
 
 ## 渲染原则
 
-v0.1 使用 GPUI 原生 `img(Path)` 加载图片，结合几何视口裁剪减少同时存在的元素数。需要注意 GPUI 内部图片缓存不会因为元素被视口裁掉就自动保证 GPU/CPU 内存上限；这不等价于完整的有界缩略图缓存。下一阶段以主动维护缩略图多级缓存替换直接读取原图。
+v0.2 的磁贴不再读取原图，而是使用 3 个后台并发任务生成 768px PNG 缩略图并按需展示；聚焦查看才读取原图。每个画布的图片使用 GPUI 有界 ImageCache，不使用 App 默认永久解码缓存。缓存按 128 个条目限制而非严格字节数配额，原图聚焦时仍可能造成瞬时内存峰值；大型图库压力测试及更精确的字节预算是后续工作。磁盘清理按文件修改时间近似淘汰最旧的缓存图，每生成 32 张触发一次，因此 512 MiB 是近似预算，不是严格上限。
 
 ## 异步正确性
 

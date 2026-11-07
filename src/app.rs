@@ -1,11 +1,12 @@
 //! GPUI native presentation. Geometry, image catalog and camera math are testable
 //! without instantiating a GPU window.
-use std::path::PathBuf;
+use std::{collections::{HashMap, HashSet}, path::PathBuf};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::*;
 use crate::camera::Camera;
 use crate::catalog::{self, Photo};
-use crate::layout::{self, Rect};
+use crate::layout::{self, Rect, Tile};
+use crate::{thumbnails, image_cache::RecentImageCache};
 
 const HEADER_HEIGHT: f32 = 68.0;
 const FOOTER_HEIGHT: f32 = 36.0;
@@ -32,6 +33,10 @@ pub struct Gallery {
     error: Option<String>,
     generation: u64,
     scan_task: Option<Task<()>>,
+    images: Entity<RecentImageCache>,
+    preview_paths: HashMap<usize, PathBuf>,
+    preview_failures: HashMap<usize, String>,
+    preview_inflight: HashSet<usize>,
     focus_handle: FocusHandle,
     drag: Option<Drag>,
     suppress_click: bool,
@@ -50,6 +55,10 @@ impl Gallery {
             error: None,
             generation: 0,
             scan_task: None,
+            images: RecentImageCache::new(128, cx),
+            preview_paths: HashMap::new(),
+            preview_failures: HashMap::new(),
+            preview_inflight: HashSet::new(),
             focus_handle: cx.focus_handle().tab_stop(true),
             drag: None,
             suppress_click: false,
@@ -65,6 +74,9 @@ impl Gallery {
         let generation = self.generation;
         self.folder = Some(folder.clone());
         self.photos.clear();
+        self.preview_paths.clear();
+        self.preview_failures.clear();
+        self.preview_inflight.clear();
         self.focused = None;
         self.drag = None;
         self.camera = Camera::default();
@@ -93,14 +105,21 @@ impl Gallery {
         }));
     }
 
-    fn open_dialog(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        // Native OS dialog. Subsequent folder enumeration runs off the UI thread.
-        if let Some(folder) = rfd::FileDialog::new()
-            .set_title("选择图片文件夹")
-            .pick_folder()
-        {
-            self.load(folder, cx);
-        }
+    fn open_dialog(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // GPUI's asynchronous platform picker keeps the native window responsive.
+        let chooser = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("选择图片文件夹".into()),
+        });
+        let view = cx.entity();
+        cx.spawn_in(window, async move |_, window| {
+            let folder = chooser.await.ok()?.ok()??.into_iter().next()?;
+            window.update(|_, cx| {
+                view.update(cx, |gallery, cx| gallery.load(folder, cx));
+            }).ok()
+        }).detach();
     }
 
     fn toggle_recursive(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -361,11 +380,91 @@ impl Gallery {
             .into_any_element()
     }
 
+
+    /// Only decode near-viewport pictures, with a hard bound on outstanding workers.
+    /// Render may be called multiple times; inflight/ready/failed state deduplicates it.
+    fn request_previews(&mut self, tiles: &[Tile], width: f32, height: f32, cx: &mut Context<Self>) {
+        const MAX_INFLIGHT: usize = 3;
+        let center_x = width * 0.5;
+        let center_y = height * 0.5;
+        let mut sorted = tiles.to_vec();
+        sorted.sort_by(|left, right| {
+            let distance = |tile: &Tile| {
+                let (x, y) = self.camera.world_to_screen(
+                    tile.rect.x + tile.rect.width * 0.5,
+                    tile.rect.y + tile.rect.height * 0.5,
+                );
+                (x - center_x).powi(2) + (y - center_y).powi(2)
+            };
+            distance(left).total_cmp(&distance(right))
+        });
+
+        for tile in sorted {
+            if self.preview_inflight.len() >= MAX_INFLIGHT {
+                break;
+            }
+            let index = tile.index;
+            if self.preview_paths.contains_key(&index)
+                || self.preview_failures.contains_key(&index)
+                || !self.preview_inflight.insert(index)
+            {
+                continue;
+            }
+
+            let path = self.photos[index].path.clone();
+            let generation = self.generation;
+            let worker = cx.background_spawn(async move {
+                thumbnails::generate_preview(&path)
+            });
+            cx.spawn(async move |weak, cx| {
+                let result = worker.await;
+                let _ = weak.update(cx, |gallery, cx| {
+                    if gallery.generation != generation {
+                        return;
+                    }
+                    gallery.preview_inflight.remove(&index);
+                    match result {
+                        Ok(path) => { gallery.preview_paths.insert(index, path); }
+                        Err(error) => { gallery.preview_failures.insert(index, error); }
+                    }
+                    cx.notify();
+                });
+            }).detach();
+        }
+    }
+
     fn tile(&self, index: usize, world_rect: Rect, cx: &mut Context<Self>) -> AnyElement {
         let photo = &self.photos[index];
         let (screen_x, screen_y) = self.camera.world_to_screen(world_rect.x, world_rect.y);
         let width = world_rect.width * self.camera.zoom;
         let height = world_rect.height * self.camera.zoom;
+        let art: AnyElement = if let Some(preview) = self.preview_paths.get(&index) {
+            img(preview.as_path())
+                .id(("thumbnail-image", index))
+                .w_full()
+                .h_full()
+                .object_fit(ObjectFit::Cover)
+                .with_loading(|| {
+                    div().size_full().bg(rgb(SURFACE)).into_any_element()
+                })
+                .with_fallback(|| {
+                    div().size_full().bg(rgb(SURFACE))
+                        .flex().items_center().justify_center()
+                        .text_size(px(11.0)).text_color(rgb(MUTED))
+                        .child("缩略图读取失败").into_any_element()
+                })
+                .into_any_element()
+        } else {
+            div().size_full().bg(rgb(SURFACE))
+                .flex().items_center().justify_center()
+                .text_size(px(11.0)).text_color(rgb(MUTED))
+                .child(if self.preview_failures.contains_key(&index) {
+                    "图片不可预览"
+                } else {
+                    "LOADING"
+                })
+                .into_any_element()
+        };
         let mut tile = div()
             .id(("mosaic-tile", index))
             .absolute()
@@ -376,12 +475,7 @@ impl Gallery {
             .overflow_hidden()
             .bg(rgb(SURFACE))
             .cursor_pointer()
-            .child(
-                img(photo.path.as_path())
-                    .w_full()
-                    .h_full()
-                    .object_fit(ObjectFit::Cover),
-            );
+            .child(art);
         if self.show_titles && width >= 90.0 && height >= 75.0 {
             tile = tile.child(
                 div()
@@ -494,9 +588,20 @@ impl Gallery {
                             .bg(rgb(0x080809))
                             .child(
                                 img(photo.path.as_path())
+                                    .id("focused-image")
                                     .w_full()
                                     .h_full()
-                                    .object_fit(ObjectFit::Contain),
+                                    .object_fit(ObjectFit::Contain)
+                                    .with_loading(|| {
+                                        div().size_full().flex().items_center().justify_center()
+                                            .text_color(rgb(MUTED)).child("正在载入原图…")
+                                            .into_any_element()
+                                    })
+                                    .with_fallback(|| {
+                                        div().size_full().flex().items_center().justify_center()
+                                            .text_color(rgb(MUTED)).child("原图读取失败")
+                                            .into_any_element()
+                                    }),
                             ),
                     )
                     .child(
@@ -532,7 +637,7 @@ impl Gallery {
             .into_any_element()
     }
 
-    fn canvas(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let (width, height) = Self::canvas_size(window);
         let mut surface = div()
             .id("mosaic-wall")
@@ -588,14 +693,17 @@ impl Gallery {
                     ),
             );
         } else {
-            for tile in layout::visible_tiles(self.photos.len(), self.camera, width, height) {
+            let tiles = layout::visible_tiles(self.photos.len(), self.camera, width, height);
+            self.request_previews(&tiles, width, height, cx);
+            for tile in tiles {
                 surface = surface.child(self.tile(tile.index, tile.rect, cx));
             }
             if let Some(index) = self.focused {
                 surface = surface.child(self.focus_overlay(index, width, height, cx));
             }
         }
-        surface.into_any_element()
+        // Never use the App-wide retain-all cache for an unbounded photo collection.
+        image_cache(self.images.clone()).child(surface).into_any_element()
     }
 }
 

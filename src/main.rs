@@ -1,6 +1,8 @@
 mod app;
 mod camera;
 mod catalog;
+mod image_cache;
+mod thumbnails;
 mod layout;
 
 use std::path::PathBuf;

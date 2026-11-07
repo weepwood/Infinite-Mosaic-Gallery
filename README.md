@@ -8,7 +8,7 @@
 
 - Rust 2021
 - [GPUI Kit](https://github.com/longbridge/gpui-kit) 0.9
-- 原生文件夹选择器 `rfd`
+- GPUI 原生异步文件夹选择器
 - 自研确定性 Mosaic 几何布局和可见区域裁剪
 
 ## 快速开始
@@ -28,9 +28,16 @@ cargo run --release -- /path/to/photos
 - `+` / `-` 缩放、`0` 重置视角
 - 进入文件夹后后台枚举图片，当前版本默认只读取当前文件夹，支持递归选项
 
+## 缩略图与缓存
+
+- 视口附近的图片由后台任务按需生成 768px PNG 缩略图，保留透明通道并读取 EXIF 方向；不会修改原图。
+- 缓存默认位于系统缓存目录的 `InfiniteMosaicGallery/previews-v1/`，每新增一批缩略图按 512 MiB 近似预算淘汰最旧文件。
+- GPUI 采用限制条目数的解码缓存，缩略图只读生成文件；聚焦时才读取原图。
+- 暂不支持在设置中调整缓存额度，完整大图库压力测试尚未完成。
+
 ## 已知边界
 
-早期版本使用 GPUI 的原生图片加载和可见区域裁剪，尚未完成有界缩略图 GPU 缓存、真实磁贴弹簧让位、文件变动监听及发布级性能验收。不要把 MVP 当作已通过大型图库的生产版本。
+当前版本已经实现按视口生成缩略图、磁盘缓存和有界 GPU 图片缓存，但仍未完成真实磁贴弹簧让位、文件变动监听及发布级性能验收。不要把 MVP 当作已通过大型图库的生产版本。
 
 项目借鉴 [Peach Video Wall](https://github.com/peach-mitao/peach) 和 [Folia PosterWall](https://github.com/chthollyphile/folia-major) 的视觉语言，但几何模板和实现为本项目原创，没有直接复制 AGPL 代码。
 
