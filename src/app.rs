@@ -116,22 +116,45 @@ impl Gallery {
                 view.loading = false;
                 match result {
                     Ok(photos) => {
-                        // Keep the user's visual position, and select the same file
-                        // even if files were inserted before it alphabetically.
+                        // Preserve identity and thumbnails across filesystem events.
+                        // A file's size/mtime stamp must match to reuse decoded pixels.
+                        let old_photos = std::mem::take(&mut view.photos);
+                        let mut ready_by_path = HashMap::new();
+                        for (old_index, preview_path) in view.preview_paths.drain() {
+                            if let Some(photo) = old_photos.get(old_index) {
+                                if let Some(stamp) = photo.stamp {
+                                    ready_by_path.insert(photo.path.clone(), (stamp, preview_path));
+                                }
+                            }
+                        }
                         let selected_path = view.focused
-                            .and_then(|index| view.photos.get(index))
+                            .and_then(|index| old_photos.get(index))
                             .map(|photo| photo.path.clone());
-                        view.photos = photos;
+                        let ordered = if preserve_view {
+                            catalog::preserve_order(&old_photos, photos)
+                        } else {
+                            photos
+                        };
+                        view.photos = ordered;
+                        for (index, photo) in view.photos.iter().enumerate() {
+                            if let (Some(new_stamp), Some((old_stamp, preview_path))) =
+                                (photo.stamp, ready_by_path.get(&photo.path))
+                            {
+                                if new_stamp == *old_stamp {
+                                    view.preview_paths.insert(index, preview_path.clone());
+                                }
+                            }
+                        }
                         view.focused = catalog::restore_selected_index(
                             selected_path.as_deref(),
                             &view.photos,
                         );
                         view.presented = view.focused;
-                        // Recreate decoded-image caches: the same file path can now
-                        // point to different bytes after a user edits the photo.
-                        view.images = RecentImageCache::new(128, cx);
+                        // Focus uses full originals keyed by path. The same path can
+                        // contain new bytes after an edit, so reset just that cache.
                         view.focus_images = RecentImageCache::new(2, cx);
-                        view.preview_paths.clear();
+                        // Thumbnail resources have versioned disk paths: unchanged
+                        // previews can safely stay in the bounded GPU cache.
                         view.preview_failures.clear();
                         view.preview_inflight.clear();
                         view.last_preview_check = Instant::now();

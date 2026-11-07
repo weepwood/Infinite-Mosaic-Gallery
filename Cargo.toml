@@ -1,6 +1,6 @@
 [package]
 name = "infinite-mosaic-gallery"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "A local-first infinite mosaic photo wall powered by Rust and GPUI Kit"
 repository = "https://github.com/weepwood/Infinite-Mosaic-Gallery"
@@ -12,6 +12,8 @@ image = { version = "0.25.10", default-features = false, features = ["bmp", "gif
 blake3 = "1.8"
 dirs = "6"
 tempfile = "3"
+notify = "8.2"
+async-channel = "2.5"
 
 [profile.release]
 lto = "thin"

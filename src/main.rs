@@ -4,6 +4,7 @@ mod catalog;
 mod image_cache;
 mod reflow;
 mod focus_geometry;
+mod watcher;
 mod thumbnails;
 mod layout;
 

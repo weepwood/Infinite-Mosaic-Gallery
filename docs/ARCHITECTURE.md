@@ -10,7 +10,8 @@ native window / GPUI Kit
   └── status footer
         ↑
   BackgroundExecutor
-        ├── read-only folder enumeration → sorted photo paths
+        ├── native filesystem events → bounded channel → 550ms batching → full rescan
+        ├── read-only folder enumeration → existing-order preservation
         └── priority preview generation (≤3 concurrent)
                     ↓
             versioned PNG disk cache (512 MiB trim)
@@ -24,7 +25,8 @@ native window / GPUI Kit
 | --- | --- |
 | `src/main.rs` | GPUI Kit 初始化、Window 建立、可选 CLI 文件夹 |
 | `src/app.rs` | GPUI View / 输入事件 / 状态 / 后台结果合并 |
-| `src/catalog.rs` | 照片格式判断、目录枚举、排序 |
+| `src/catalog.rs` | 照片格式判断、后台目录枚举、文件大小与 mtime 版本、稳定空间排序 |
+| `src/watcher.rs` | 原生文件监控、事件类型过滤、容量为 1 的通知队列 |
 | `src/camera.rs` | 世界坐标与视口变换、缩放与平移 |
 | `src/layout.rs` | 原创不重叠布局模板、只生成可见磁贴 |
 | `src/reflow.rs` | 6×6 焦点区域、剩余区域几何分配、最短位移匹配与纯函数测试 |
@@ -43,6 +45,8 @@ native window / GPUI Kit
 v0.2 的磁贴不再读取原图，而是使用 3 个后台并发任务生成 768px PNG 缩略图并按需展示；聚焦查看才读取原图。每个画布的图片使用 GPUI 有界 ImageCache，不使用 App 默认永久解码缓存。缓存按 128 个条目限制而非严格字节数配额，原图聚焦时仍可能造成瞬时内存峰值；大型图库压力测试及更精确的字节预算是后续工作。磁盘清理按文件修改时间近似淘汰最旧的缓存图，每生成 32 张触发一次，因此 512 MiB 是近似预算，不是严格上限。
 
 ## 异步正确性
+
+文件变动采用系统 `notify` 监听，用户可以关闭自动同步。事件进入容量为 1 的异步邮箱，并以 550ms 合并窗口触发后台全量重扫，防止批量复制产生无界事件队列。扫描完成后按文件路径保留原有图片顺序，新图片按名称排序后追加。仅当文件 size/mtime 不变时复用原缩略图与 GPU 图像条目。
 
 用户每次打开或刷新文件夹都增加 generation。后台文件枚举完成后，只有 generation 匹配的结果才能覆盖当前图库。每次新的请求会替换旧前台 Task 句柄。手动刷新期间旧图库仍可显示，结果到达后通过路径重映射选中的照片；若图片被编辑，重新创建有界解码缓存，避免复用同路径的旧 GPU 内容。缓存文件的周期清理可能使内存中的预览路径失效，因此只在有限时间间隔检查当前视口预览路径并允许重新生成。
 
