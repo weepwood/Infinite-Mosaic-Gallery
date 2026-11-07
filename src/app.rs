@@ -75,17 +75,29 @@ impl Gallery {
     }
 
     fn load(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
+        self.scan(folder, false, cx);
+    }
+
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        if let Some(folder) = self.folder.clone() {
+            self.scan(folder, true, cx);
+        }
+    }
+
+    fn scan(&mut self, folder: PathBuf, preserve_view: bool, cx: &mut Context<Self>) {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         self.folder = Some(folder.clone());
-        self.photos.clear();
-        self.preview_paths.clear();
-        self.preview_failures.clear();
-        self.preview_inflight.clear();
-        self.focused = None;
-        self.presented = None;
-        self.drag = None;
-        self.camera = Camera::default();
+        if !preserve_view {
+            self.photos.clear();
+            self.preview_paths.clear();
+            self.preview_failures.clear();
+            self.preview_inflight.clear();
+            self.focused = None;
+            self.presented = None;
+            self.drag = None;
+            self.camera = Camera::default();
+        }
         self.loading = true;
         self.error = None;
         cx.notify();
@@ -94,17 +106,35 @@ impl Gallery {
         let worker = cx.background_spawn(async move {
             catalog::scan_folder(&folder, recursive)
         });
-        // Replacing this handle cancels stale foreground result delivery.
+        // Stale results cannot replace a later folder/refresh request.
         self.scan_task = Some(cx.spawn(async move |weak, cx| {
             let result = worker.await;
             let _ = weak.update(cx, |view, cx| {
-                if view.generation != generation {
-                    return;
-                }
+                if view.generation != generation { return; }
                 view.loading = false;
                 match result {
-                    Ok(photos) => view.photos = photos,
-                    Err(error) => view.error = Some(error),
+                    Ok(photos) => {
+                        // Keep the user's visual position, and select the same file
+                        // even if files were inserted before it alphabetically.
+                        let selected_path = view.focused
+                            .and_then(|index| view.photos.get(index))
+                            .map(|photo| photo.path.clone());
+                        view.photos = photos;
+                        view.focused = selected_path.and_then(|path| {
+                            view.photos.iter().position(|photo| photo.path == path)
+                        });
+                        view.presented = view.focused;
+                        // Photo ordering and file versions may have changed.
+                        // Revalidate every preview via the versioned disk cache.
+                        view.preview_paths.clear();
+                        view.preview_failures.clear();
+                        view.preview_inflight.clear();
+                    }
+                    Err(error) => {
+                        // For refresh failures, leave previously visible photos
+                        // and the camera untouched instead of blanking the wall.
+                        view.error = Some(error);
+                    }
                 }
                 cx.notify();
             });
@@ -130,8 +160,8 @@ impl Gallery {
 
     fn toggle_recursive(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         self.recursive = !self.recursive;
-        if let Some(folder) = self.folder.clone() {
-            self.load(folder, cx);
+        if self.folder.is_some() {
+            self.reload(cx);
         } else {
             cx.notify();
         }
@@ -149,9 +179,7 @@ impl Gallery {
     }
 
     fn refresh(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(folder) = self.folder.clone() {
-            self.load(folder, cx);
-        }
+        self.reload(cx);
     }
 
     fn select(&mut self, index: usize, cx: &mut Context<Self>) {
